@@ -1,11 +1,13 @@
 use std::{
     fs,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, prelude::*, BufReader},
+    path::PathBuf,
 };
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
-use flate2::read::ZlibDecoder;
+use flate2::{bufread::ZlibEncoder, read::ZlibDecoder, Compression};
+use sha1::{Digest, Sha1};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -19,20 +21,33 @@ enum Commands {
     /// Create an empty Git repository
     Init,
 
-    /// Provide content for repository objects
+    /// Provide content or type and size information for repository objects
     CatFile {
-        /// pretty-print object's content
+        /// Pretty-print object's content
         #[arg(short)]
         pretty_print: bool,
 
-        /// show object type
+        /// Show object type
         #[arg(short)]
         type_only: bool,
 
-        /// show object size
+        /// Show object size
         #[arg(short)]
         size_only: bool,
+
+        /// Object hash
+        #[arg(id = "object")]
         hash: String,
+    },
+
+    /// Compute object ID and optionally create an object from a file
+    HashObject {
+        /// Actually write the object into the object database
+        #[arg(short)]
+        write: bool,
+
+        #[arg(id = "file")]
+        file: String,
     },
 }
 
@@ -57,6 +72,7 @@ fn main() -> anyhow::Result<()> {
             size_only,
             hash,
         } => cat_file(&hash, type_only, size_only),
+        Commands::HashObject { write, file } => hash_object(&file, write),
     }
 }
 
@@ -119,6 +135,57 @@ pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<
     io::stdout()
         .write_all(&buf)
         .context("writing object data to stdout")?;
+
+    Ok(())
+}
+
+pub fn hash_object(file: &str, write: bool) -> anyhow::Result<()> {
+    let f = fs::File::open(file).with_context(|| format!("opening file {file}"))?;
+    let mut f = BufReader::new(f);
+
+    let mut content: Vec<u8> = Vec::new();
+    let n = f
+        .read_to_end(&mut content)
+        .with_context(|| format!("reading file {file}"))?;
+
+    let header = format!("blob {n}\0");
+    let content_with_header = [header.as_bytes(), &content].concat();
+
+    let digest = Sha1::digest(&content_with_header);
+
+    let mut z = ZlibEncoder::new(
+        std::io::Cursor::new(content_with_header),
+        Compression::fast(),
+    );
+
+    let mut compressed = Vec::new();
+
+    z.read_to_end(&mut compressed)
+        .context("compressing the file")?;
+
+    let digest = format!("{:x}", digest);
+
+    println!("{digest}");
+
+    if !write {
+        return Ok(());
+    }
+
+    let mut path = PathBuf::new();
+
+    let dir = &digest[..2]; // first 2 chars of the digest
+    let filename = &digest[2..]; // rest of the digest
+
+    path.push(OBJECTS_PATH);
+    path.push(dir);
+
+    fs::create_dir_all(&path).with_context(|| format!("creating directory {}", path.display()))?;
+
+    path.push(filename);
+
+    let mut f =
+        fs::File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
+    f.write_all(&compressed)?;
 
     Ok(())
 }
