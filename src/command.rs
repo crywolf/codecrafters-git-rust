@@ -4,9 +4,12 @@ use std::{
     path::PathBuf,
 };
 
-use anyhow::Context;
-use flate2::{bufread::ZlibEncoder, read::ZlibDecoder, Compression};
+use anyhow::{bail, Context};
+use flate2::{bufread::ZlibEncoder, Compression};
+use hex::ToHex;
 use sha1::{Digest, Sha1};
+
+use crate::object;
 
 const OBJECTS_PATH: &str = ".git/objects";
 
@@ -22,31 +25,18 @@ pub fn init() -> Result<(), anyhow::Error> {
 }
 
 pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
-    let dir = &hash[..2];
-    let file = &hash[2..];
-    let path = format!("{OBJECTS_PATH}/{dir}/{file}");
+    let mut f = object::ObjectFile::new(hash)?;
+    f.read_header()?;
 
-    let f = fs::File::open(&path).with_context(|| format!("opening file {path}"))?;
-
-    let z = ZlibDecoder::new(f);
-    let mut z = BufReader::new(z);
-
-    let mut buf = Vec::new();
-
-    z.read_until(0, &mut buf)
-        .with_context(|| format!("reading object header in file {path}"))?;
-
-    let header = std::ffi::CStr::from_bytes_with_nul(&buf)
-        .expect("should be null terminated string")
-        .to_str()
-        .context("file header is not valid UTF-8")?;
-
-    let (typ, size) = header
-        .split_once(' ')
-        .with_context(|| format!("parsing object header {header}"))?;
+    let Some(typ) = f.typ.clone() else {
+        bail!("File type was not read")
+    };
+    let Some(size) = f.size else {
+        bail!("File size was not read")
+    };
 
     anyhow::ensure!(
-        ["blob", "commit", "tree"].contains(&typ),
+        ["blob", "commit", "tree"].contains(&typ.as_str()),
         "unknown object type '{typ}'"
     );
 
@@ -60,25 +50,10 @@ pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<
         return Ok(());
     }
 
-    let size = size.parse::<usize>().context("parsing object size")?;
-
-    buf.clear();
-    buf.reserve_exact(size);
-    buf.resize(size, 0);
-
-    z.read_exact(&mut buf).context("reading object data")?;
-
-    let n = z
-        .read(&mut [0])
-        .context("ensuring that object was completely read")?;
-
-    anyhow::ensure!(
-        n == 0,
-        "object size is {n} bytes larger than stated in object header"
-    );
+    f.read_content()?;
 
     io::stdout()
-        .write_all(&buf)
+        .write_all(f.as_bytes())
         .context("writing object data to stdout")?;
 
     Ok(())
@@ -131,6 +106,73 @@ pub fn hash_object(file: &str, write: bool) -> anyhow::Result<()> {
     let mut f =
         fs::File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
     f.write_all(&compressed)?;
+
+    Ok(())
+}
+
+pub fn ls_tree(hash: &str, name_only: bool) -> Result<(), anyhow::Error> {
+    let mut f = object::ObjectFile::new(hash)?;
+    f.read_header()?;
+
+    let Some(typ) = &f.typ else {
+        bail!("File type was not read")
+    };
+
+    anyhow::ensure!(typ == "tree", "incorrect object type '{typ}'");
+
+    f.read_content()?;
+
+    let mut content = BufReader::new(f.as_bytes());
+
+    loop {
+        let mut buf = Vec::new();
+        let n = content
+            .read_until(0, &mut buf)
+            .context("reading mode and name for tree item")?;
+        if n == 0 {
+            break;
+        }
+
+        let item = std::ffi::CStr::from_bytes_with_nul(&buf)
+            .expect("should be null terminated string")
+            .to_str()
+            .context("mode and name in tree item is not valid UTF-8")?;
+
+        let (mode, name) = item
+            .split_once(' ')
+            .with_context(|| format!("parsing object mode and name from {item}"))?;
+
+        let mut hash = [0; 20];
+        content
+            .read_exact(&mut hash)
+            .context("reading sha hash of tree item")?;
+
+        let mut kind = "blob";
+        if mode.starts_with('4') {
+            kind = "tree";
+        }
+
+        if name_only {
+            println!("{name}");
+        } else {
+            println!(
+                "{:06} {} {}    {}",
+                mode,
+                kind,
+                hash.encode_hex::<String>(),
+                name,
+            );
+        }
+    }
+
+    let n = content
+        .read(&mut [0])
+        .context("ensuring that object was completely read")?;
+
+    anyhow::ensure!(
+        n == 0,
+        "object size is {n} bytes larger than stated in object header"
+    );
 
     Ok(())
 }

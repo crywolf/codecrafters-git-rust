@@ -1,4 +1,5 @@
 mod command;
+mod object;
 
 use clap::{Parser, Subcommand};
 
@@ -46,6 +47,17 @@ enum Commands {
         #[arg(id = "file")]
         file: String,
     },
+
+    /// List the contents of a tree object
+    LsTree {
+        /// List only filenames (instead of the "long" output), one per line
+        #[arg(long)]
+        name_only: bool,
+
+        /// Id of a tree-ish
+        #[arg(id = "tree-ish")]
+        hash: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -63,5 +75,6 @@ fn main() -> anyhow::Result<()> {
             file,
             typ: _,
         } => command::hash_object(&file, write),
+        Commands::LsTree { name_only, hash } => command::ls_tree(&hash, name_only),
     }
 }
