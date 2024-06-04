@@ -1,39 +1,35 @@
 use std::{
     fs,
     io::{self, prelude::*, BufReader},
-    path::PathBuf,
 };
 
-use anyhow::{bail, Context};
-use flate2::{bufread::ZlibEncoder, Compression};
-use hex::ToHex;
-use sha1::{Digest, Sha1};
+use anyhow::Context;
 
-use crate::object;
+use crate::object::ObjectFile;
 
-const OBJECTS_PATH: &str = ".git/objects";
-
-pub fn init() -> Result<(), anyhow::Error> {
-    fs::create_dir(".git").unwrap();
-    fs::create_dir(".git/objects").unwrap();
-    fs::create_dir(".git/refs").unwrap();
-    fs::create_dir(".git/refs/heads").unwrap();
-    fs::create_dir(".git/refs/tags").unwrap();
-    fs::write(".git/HEAD", "ref: refs/heads/master\n").unwrap();
+pub fn init() -> anyhow::Result<()> {
+    create_git_dirs().context("creating git directories")?;
     println!("Initialized git directory");
     Ok(())
 }
 
-pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
-    let mut f = object::ObjectFile::new(hash)?;
-    f.read_header()?;
+fn create_git_dirs() -> anyhow::Result<()> {
+    fs::create_dir(".git")?;
+    fs::create_dir(".git/objects")?;
+    fs::create_dir(".git/refs")?;
+    fs::create_dir(".git/refs/heads")?;
+    fs::create_dir(".git/refs/tags")?;
+    fs::write(".git/HEAD", "ref: refs/heads/master\n")?;
+    Ok(())
+}
 
-    let Some(typ) = f.typ.clone() else {
-        bail!("File type was not read")
-    };
-    let Some(size) = f.size else {
-        bail!("File size was not read")
-    };
+/// git cat-file command
+pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
+    let mut f = ObjectFile::read(hash)?;
+
+    let header = f.get_header()?;
+    let typ = header.typ;
+    let size = header.size;
 
     anyhow::ensure!(
         ["blob", "commit", "tree"].contains(&typ.as_str()),
@@ -50,79 +46,29 @@ pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<
         return Ok(());
     }
 
-    f.read_content()?;
-
     io::stdout()
-        .write_all(f.as_bytes())
+        .write_all(f.get_content()?)
         .context("writing object data to stdout")?;
 
     Ok(())
 }
 
+/// git hash-object command
 pub fn hash_object(file: &str, write: bool) -> anyhow::Result<()> {
-    let f = fs::File::open(file).with_context(|| format!("opening file {file}"))?;
-    let mut f = BufReader::new(f);
-
-    let mut content: Vec<u8> = Vec::new();
-    let n = f
-        .read_to_end(&mut content)
-        .with_context(|| format!("reading file {file}"))?;
-
-    let header = format!("blob {n}\0");
-    let content_with_header = [header.as_bytes(), &content].concat();
-
-    let digest = Sha1::digest(&content_with_header);
-
-    let mut z = ZlibEncoder::new(
-        std::io::Cursor::new(content_with_header),
-        Compression::fast(),
-    );
-
-    let mut compressed = Vec::new();
-
-    z.read_to_end(&mut compressed)
-        .context("compressing the file")?;
-
-    let digest = format!("{:x}", digest);
-
+    let digest = ObjectFile::hash(file, write)?;
     println!("{digest}");
-
-    if !write {
-        return Ok(());
-    }
-
-    let mut path = PathBuf::new();
-
-    let dir = &digest[..2]; // first 2 chars of the digest
-    let filename = &digest[2..]; // rest of the digest
-
-    path.push(OBJECTS_PATH);
-    path.push(dir);
-
-    fs::create_dir_all(&path).with_context(|| format!("creating directory {}", path.display()))?;
-
-    path.push(filename);
-
-    let mut f =
-        fs::File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
-    f.write_all(&compressed)?;
-
     Ok(())
 }
 
+/// git ls-tree command
 pub fn ls_tree(hash: &str, name_only: bool) -> Result<(), anyhow::Error> {
-    let mut f = object::ObjectFile::new(hash)?;
-    f.read_header()?;
-
-    let Some(typ) = &f.typ else {
-        bail!("File type was not read")
-    };
+    let mut f = ObjectFile::read(hash)?;
+    let header = f.get_header()?;
+    let typ = header.typ;
 
     anyhow::ensure!(typ == "tree", "incorrect object type '{typ}'");
 
-    f.read_content()?;
-
-    let mut content = BufReader::new(f.as_bytes());
+    let mut content = BufReader::new(f.get_content()?);
 
     loop {
         let mut buf = Vec::new();
@@ -155,13 +101,7 @@ pub fn ls_tree(hash: &str, name_only: bool) -> Result<(), anyhow::Error> {
         if name_only {
             println!("{name}");
         } else {
-            println!(
-                "{:06} {} {}    {}",
-                mode,
-                kind,
-                hash.encode_hex::<String>(),
-                name,
-            );
+            println!("{:06} {} {}    {}", mode, kind, hex::encode(hash), name,);
         }
     }
 
