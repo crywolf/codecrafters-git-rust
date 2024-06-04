@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{self, prelude::*, BufReader},
+    path::PathBuf,
 };
 
 use anyhow::Context;
@@ -61,7 +62,16 @@ pub fn hash_object(file: &str, write: bool) -> anyhow::Result<()> {
 }
 
 /// git ls-tree command
-pub fn ls_tree(hash: &str, name_only: bool) -> Result<(), anyhow::Error> {
+pub fn ls_tree(hash: &str, recurse: bool, name_only: bool) -> anyhow::Result<()> {
+    list_tree(hash, recurse, name_only, None)
+}
+
+fn list_tree(
+    hash: &str,
+    recurse: bool,
+    name_only: bool,
+    path_prefix: Option<&str>,
+) -> anyhow::Result<()> {
     let mut f = ObjectFile::read(hash)?;
     let header = f.get_header()?;
     let typ = header.typ;
@@ -98,10 +108,24 @@ pub fn ls_tree(hash: &str, name_only: bool) -> Result<(), anyhow::Error> {
             kind = "tree";
         }
 
-        if name_only {
-            println!("{name}");
+        if recurse && kind == "tree" {
+            list_tree(hex::encode(hash).as_str(), recurse, name_only, Some(name))?;
         } else {
-            println!("{:06} {} {}    {}", mode, kind, hex::encode(hash), name,);
+            let mut name = PathBuf::from(name);
+            if let Some(prefix) = path_prefix {
+                name = PathBuf::from(prefix).join(name);
+            }
+            if name_only {
+                println!("{}", name.display());
+            } else {
+                println!(
+                    "{:06} {} {}\t{}",
+                    mode,
+                    kind,
+                    hex::encode(hash),
+                    name.display()
+                );
+            }
         }
     }
 

@@ -50,6 +50,10 @@ enum Commands {
 
     /// List the contents of a tree object
     LsTree {
+        /// Recurse into sub-trees
+        #[arg(short)]
+        recurse: bool,
+
         /// List only filenames (instead of the "long" output), one per line
         #[arg(long)]
         name_only: bool,
@@ -75,6 +79,10 @@ fn main() -> anyhow::Result<()> {
             file,
             typ: _,
         } => command::hash_object(&file, write),
-        Commands::LsTree { name_only, hash } => command::ls_tree(&hash, name_only),
+        Commands::LsTree {
+            recurse,
+            name_only,
+            hash,
+        } => command::ls_tree(&hash, recurse, name_only),
     }
 }
