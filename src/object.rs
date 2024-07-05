@@ -2,17 +2,18 @@ use std::{
     fmt::Display,
     fs,
     io::{prelude::*, BufReader},
-    path::PathBuf,
+    os::unix::fs::MetadataExt,
+    path::{Path, PathBuf},
 };
 
 use anyhow::Context;
 use flate2::read::ZlibDecoder;
-use flate2::{read::ZlibEncoder, Compression};
+use flate2::{write::ZlibEncoder, Compression};
 use sha1::{Digest, Sha1};
 
 const OBJECTS_PATH: &str = ".git/objects";
 
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Debug)]
 pub enum ObjectType {
     Blob,
     Tree,
@@ -35,53 +36,26 @@ pub struct Header {
     pub size: usize,
 }
 
-pub struct ObjectFile {
-    header: Option<Header>,
-    content: Vec<u8>,
-    content_read: bool,
-    path: PathBuf,
-    decoder: BufReader<ZlibDecoder<fs::File>>,
+pub struct ObjectFile<R> {
+    pub header: Header,
+    pub reader: R,
 }
 
-impl ObjectFile {
-    pub fn read(hash: &str) -> anyhow::Result<Self> {
+impl ObjectFile<()> {
+    pub fn read(hash: &str) -> anyhow::Result<ObjectFile<impl BufRead>> {
         let path = Self::hash_to_path(hash);
         let f =
             fs::File::open(&path).with_context(|| format!("opening file {}", path.display()))?;
 
-        let decoder = BufReader::new(ZlibDecoder::new(f));
+        let mut decoder = BufReader::new(ZlibDecoder::new(f));
 
-        Ok(Self {
-            header: None,
-            content: Vec::new(),
-            content_read: false,
-            path,
-            decoder,
-        })
-    }
+        let mut buf = Vec::new();
 
-    /// Returns `Header` containing type of the decompressed object file and size of it content
-    pub fn get_header(&mut self) -> anyhow::Result<Header> {
-        if self.header.is_none() {
-            self.read_header()?;
-        }
-        Ok(self.header.clone().expect("header is set here"))
-    }
+        decoder
+            .read_until(0, &mut buf)
+            .context("reading object header")?;
 
-    /// Returns content of the decompressed object file
-    pub fn get_content(&mut self) -> anyhow::Result<&[u8]> {
-        if !self.content_read {
-            self.read_content()?;
-        }
-        Ok(&self.content)
-    }
-
-    fn read_header(&mut self) -> anyhow::Result<()> {
-        self.decoder
-            .read_until(0, &mut self.content)
-            .with_context(|| format!("reading object header in file {}", self.path.display()))?;
-
-        let header = std::ffi::CStr::from_bytes_with_nul(&self.content)
+        let header = std::ffi::CStr::from_bytes_with_nul(&buf)
             .expect("should be null terminated string")
             .to_str()
             .context("file header is not valid UTF-8")?;
@@ -101,68 +75,87 @@ impl ObjectFile {
             _ => anyhow::bail!("unknown object type {}", typ),
         };
 
-        self.header = Some(Header {
+        let header = Header {
             typ: object_type,
             size,
-        });
+        };
 
-        Ok(())
+        Ok(ObjectFile {
+            header,
+            reader: decoder,
+        })
     }
 
-    fn read_content(&mut self) -> anyhow::Result<()> {
-        if self.header.is_none() {
-            self.read_header()?;
-        }
+    pub fn from_file(path: impl AsRef<Path>) -> anyhow::Result<ObjectFile<impl Read>> {
+        let path = path.as_ref();
 
-        let size = self.header.as_ref().expect("header is set here").size;
+        let stat = fs::metadata(path).with_context(|| format!("stat file {}", path.display()))?;
 
-        self.content.clear();
-        self.content.reserve_exact(size);
-        self.content.resize(size, 0);
+        let f = fs::File::open(path).with_context(|| format!("opening file {}", path.display()))?;
 
-        self.decoder
-            .read_exact(&mut self.content)
-            .context("reading object data")?;
+        let expected_size = stat.size();
+        let header = Header {
+            typ: ObjectType::Blob,
+            size: expected_size as usize,
+        };
 
-        let n = self
-            .decoder
-            .read(&mut [0])
-            .context("ensuring that object was completely read")?;
+        let r = f.take(stat.size());
 
-        anyhow::ensure!(
-            n == 0,
-            "object size is {n} bytes larger than stated in object header"
-        );
-
-        self.content_read = true;
-
-        Ok(())
+        Ok(ObjectFile { header, reader: r })
     }
 
+    fn hash_to_path(hash: &str) -> PathBuf {
+        let dir = &hash[..2];
+        let file = &hash[2..];
+        let mut path = PathBuf::from(OBJECTS_PATH);
+        path.push(dir);
+        path.push(file);
+        path
+    }
+}
+
+impl<R: Read> ObjectFile<R> {
     /// Computes and returns object hash ID
-    pub fn hash(mut r: impl Read) -> anyhow::Result<[u8; 20]> {
-        let mut buf = Vec::new();
-        r.read_to_end(&mut buf)
-            .context("reading data to compute SHA1 digest")?;
-        let digest = Sha1::digest(&buf);
+    pub fn hash(mut self) -> anyhow::Result<[u8; 20]> {
+        let mut hasher = HashWriter {
+            writer: std::io::sink(), // just consume all data
+            hasher: Sha1::new(),
+        };
+
+        let header = self.header;
+        write!(hasher, "{} {}\0", header.typ, header.size)?;
+
+        std::io::copy(&mut self.reader, &mut hasher)
+            .context("streaming object's data to hasher")?;
+
+        let digest = hasher.hasher.finalize();
 
         Ok(digest.into())
     }
 
     /// Compresses and write object's data to disk. Returns object hash ID.
-    pub fn write<R>(r: R) -> anyhow::Result<[u8; 20]>
-    where
-        R: Read + std::clone::Clone,
-    {
-        let digest = ObjectFile::hash(r.clone())?;
+    pub fn write(mut self) -> anyhow::Result<[u8; 20]> {
+        let dir = tempfile::tempdir().context("creating temp dir")?;
 
-        let mut encoder = ZlibEncoder::new(r, Compression::fast());
+        let tmp_file_path = dir.path().join("tmpfile");
+        let tmp_file = fs::File::create(&tmp_file_path).context("creating temp file")?;
 
-        let mut compressed = Vec::new();
+        let encoder = ZlibEncoder::new(tmp_file, Compression::fast());
 
-        encoder
-            .read_to_end(&mut compressed)
-            .context("compressing the file")?;
+        let mut compressor = HashWriter {
+            writer: encoder,
+            hasher: Sha1::new(),
+        };
+
+        let header = self.header;
+        write!(compressor, "{} {}\0", header.typ, header.size)?;
+
+        std::io::copy(&mut self.reader, &mut compressor)
+            .context("streaming object's content to file on disk")?;
+
+        let _ = compressor.writer.finish()?;
+
+        let digest = compressor.hasher.finalize();
 
         let hash = hex::encode(digest);
         let dir = &hash[..2]; // first 2 chars of the digest
@@ -176,19 +169,29 @@ impl ObjectFile {
 
         path.push(filename);
 
-        let mut f =
-            fs::File::create(&path).with_context(|| format!("creating file {}", path.display()))?;
-        f.write_all(&compressed)?;
+        fs::rename(tmp_file_path, &path)
+            .with_context(|| format!("moving temp file to {}", path.display()))?;
 
-        Ok(digest)
+        Ok(digest.into())
+    }
+}
+
+struct HashWriter<W> {
+    writer: W,
+    hasher: Sha1,
+}
+
+impl<W> Write for HashWriter<W>
+where
+    W: Write,
+{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.writer.write(buf)?;
+        self.hasher.update(&buf[..n]);
+        Ok(n)
     }
 
-    fn hash_to_path(hash: &str) -> PathBuf {
-        let dir = &hash[..2];
-        let file = &hash[2..];
-        let mut path = PathBuf::from(OBJECTS_PATH);
-        path.push(dir);
-        path.push(file);
-        path
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush()
     }
 }

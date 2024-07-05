@@ -1,12 +1,12 @@
 use std::{
     fs,
-    io::{prelude::*, BufReader},
+    io::prelude::*,
     path::{Path, PathBuf},
 };
 
 use anyhow::Context;
 
-use crate::object::{ObjectFile, ObjectType};
+use crate::object::{Header, ObjectFile, ObjectType};
 
 pub fn init() -> anyhow::Result<()> {
     create_git_dirs().context("creating git directories")?;
@@ -26,11 +26,10 @@ fn create_git_dirs() -> anyhow::Result<()> {
 
 /// git cat-file command
 pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
-    let mut f = ObjectFile::read(hash)?;
+    let mut object = ObjectFile::read(hash)?;
 
-    let header = f.get_header()?;
-    let object_type = header.typ;
-    let size = header.size;
+    let object_type = object.header.typ;
+    let size = object.header.size;
 
     if type_only {
         println!("{object_type}");
@@ -42,34 +41,23 @@ pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<
         return Ok(());
     }
 
-    std::io::stdout()
-        .write_all(f.get_content()?)
-        .context("writing object data to stdout")?;
+    let mut stdout = std::io::stdout().lock();
+
+    std::io::copy(&mut object.reader, &mut stdout).context("streaming file content to stdin")?;
 
     Ok(())
 }
 
 /// git hash-object command
 pub fn hash_object(path: &Path, write: bool) -> anyhow::Result<[u8; 20]> {
-    let mut f = fs::File::open(path).with_context(|| format!("opening file {}", path.display()))?;
-
-    let mut content: Vec<u8> = Vec::new();
-    let size = f
-        .read_to_end(&mut content)
-        .with_context(|| format!("reading file {}", path.display()))?;
-
-    let typ = ObjectType::Blob;
-    let header = format!("{} {size}\0", &typ);
-    let content_with_header = [header.as_bytes(), &content].concat();
-
-    let r = std::io::Cursor::new(content_with_header);
+    let object = ObjectFile::from_file(path)?;
 
     let hash = if write {
         // compress and write to disk
-        ObjectFile::write(r)?
+        object.write()?
     } else {
         // just compute object hash
-        ObjectFile::hash(r)?
+        object.hash()?
     };
 
     Ok(hash)
@@ -86,17 +74,15 @@ fn list_tree(
     name_only: bool,
     path_prefix: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut f = ObjectFile::read(hash)?;
-    let header = f.get_header()?;
-    let typ = header.typ;
+    let mut object = ObjectFile::read(hash)?;
 
+    let typ = object.header.typ;
     anyhow::ensure!(typ == ObjectType::Tree, "incorrect object type '{typ}'");
-
-    let mut content = BufReader::new(f.get_content()?);
 
     loop {
         let mut buf = Vec::new();
-        let n = content
+        let n = object
+            .reader
             .read_until(0, &mut buf)
             .context("reading mode and name for tree item")?;
         if n == 0 {
@@ -113,7 +99,8 @@ fn list_tree(
             .with_context(|| format!("parsing object mode and name from {item}"))?;
 
         let mut hash = [0; 20];
-        content
+        object
+            .reader
             .read_exact(&mut hash)
             .context("reading sha hash of tree item")?;
 
@@ -144,7 +131,8 @@ fn list_tree(
         }
     }
 
-    let n = content
+    let n = object
+        .reader
         .read(&mut [0])
         .context("ensuring that object was completely read")?;
 
@@ -234,14 +222,18 @@ fn write_tree_for(path: &Path) -> anyhow::Result<Option<[u8; 20]>> {
         return Ok(None);
     }
 
-    let typ = ObjectType::Tree;
-    let header = format!("{} {}\0", &typ, tree.len());
-    let content_with_header = [header.as_bytes(), &tree].concat();
+    let header = Header {
+        typ: ObjectType::Tree,
+        size: tree.len(),
+    };
 
-    let r = std::io::Cursor::new(content_with_header);
+    let tree_object = ObjectFile {
+        header,
+        reader: std::io::Cursor::new(tree),
+    };
 
     // compress and write to disk
-    let hash = ObjectFile::write(r)?;
+    let hash = tree_object.write()?;
 
     Ok(Some(hash))
 }
