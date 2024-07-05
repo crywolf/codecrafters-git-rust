@@ -1,6 +1,8 @@
 mod command;
 mod object;
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -45,7 +47,7 @@ enum Commands {
         typ: String,
 
         #[arg(id = "file")]
-        file: String,
+        file: PathBuf,
     },
 
     /// List the contents of a tree object
@@ -62,6 +64,8 @@ enum Commands {
         #[arg(id = "tree-ish")]
         hash: String,
     },
+    /// Create a tree object
+    WriteTree {},
 }
 
 fn main() -> anyhow::Result<()> {
@@ -78,11 +82,16 @@ fn main() -> anyhow::Result<()> {
             write,
             file,
             typ: _,
-        } => command::hash_object(&file, write),
+        } => {
+            let hash = command::hash_object(&file, write)?;
+            println!("{}", hex::encode(hash));
+            Ok(())
+        }
         Commands::LsTree {
             recurse,
             name_only,
             hash,
         } => command::ls_tree(&hash, recurse, name_only),
+        Commands::WriteTree {} => command::write_tree(),
     }
 }

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Display,
     fs,
     io::{prelude::*, BufReader},
     path::PathBuf,
@@ -11,6 +12,23 @@ use sha1::{Digest, Sha1};
 
 const OBJECTS_PATH: &str = ".git/objects";
 
+#[derive(PartialEq)]
+pub enum ObjectType {
+    Blob,
+    Tree,
+    //Commit,
+}
+
+impl Display for ObjectType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ObjectType::Blob => write!(f, "blob"),
+            ObjectType::Tree => write!(f, "tree"),
+            // ObjectType::Commit => write!(f, "commit"),
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Header {
     pub typ: String,
@@ -21,14 +39,15 @@ pub struct ObjectFile {
     header: Option<Header>,
     content: Vec<u8>,
     content_read: bool,
-    path: String,
+    path: PathBuf,
     decoder: BufReader<ZlibDecoder<fs::File>>,
 }
 
 impl ObjectFile {
     pub fn read(hash: &str) -> anyhow::Result<Self> {
         let path = Self::hash_to_path(hash);
-        let f = fs::File::open(&path).with_context(|| format!("opening file {path}"))?;
+        let f =
+            fs::File::open(&path).with_context(|| format!("opening file {}", path.display()))?;
 
         let decoder = BufReader::new(ZlibDecoder::new(f));
 
@@ -60,7 +79,7 @@ impl ObjectFile {
     fn read_header(&mut self) -> anyhow::Result<()> {
         self.decoder
             .read_until(0, &mut self.content)
-            .with_context(|| format!("reading object header in file {}", self.path))?;
+            .with_context(|| format!("reading object header in file {}", self.path.display()))?;
 
         let header = std::ffi::CStr::from_bytes_with_nul(&self.content)
             .expect("should be null terminated string")
@@ -113,29 +132,24 @@ impl ObjectFile {
         Ok(())
     }
 
-    /// Computes and returns object hash ID and optionally saves object file to disk if `write` is true.
-    pub fn hash(file: &str, write: bool) -> anyhow::Result<String> {
-        let f = fs::File::open(file).with_context(|| format!("opening file {file}"))?;
-        let mut f = BufReader::new(f);
+    /// Computes and returns object hash ID
+    pub fn hash(mut r: impl Read) -> anyhow::Result<[u8; 20]> {
+        let mut buf = Vec::new();
+        r.read_to_end(&mut buf)
+            .context("reading data to compute SHA1 digest")?;
+        let digest = Sha1::digest(&buf);
 
-        let mut content: Vec<u8> = Vec::new();
-        let n = f
-            .read_to_end(&mut content)
-            .with_context(|| format!("reading file {file}"))?;
+        Ok(digest.into())
+    }
 
-        let header = format!("blob {n}\0");
-        let content_with_header = [header.as_bytes(), &content].concat();
+    /// Compresses and write object's data to disk. Returns object hash ID.
+    pub fn write<R>(r: R) -> anyhow::Result<[u8; 20]>
+    where
+        R: Read + std::clone::Clone,
+    {
+        let digest = ObjectFile::hash(r.clone())?;
 
-        let digest = Sha1::digest(&content_with_header);
-
-        let digest = format!("{:x}", digest);
-
-        if !write {
-            return Ok(digest);
-        }
-
-        // compress and write to disk
-        let mut encoder = ZlibEncoder::new(content_with_header.as_slice(), Compression::fast());
+        let mut encoder = ZlibEncoder::new(r, Compression::fast());
 
         let mut compressed = Vec::new();
 
@@ -143,12 +157,11 @@ impl ObjectFile {
             .read_to_end(&mut compressed)
             .context("compressing the file")?;
 
-        let mut path = PathBuf::new();
+        let hash = hex::encode(digest);
+        let dir = &hash[..2]; // first 2 chars of the digest
+        let filename = &hash[2..]; // rest of the digest
 
-        let dir = &digest[..2]; // first 2 chars of the digest
-        let filename = &digest[2..]; // rest of the digest
-
-        path.push(OBJECTS_PATH);
+        let mut path = PathBuf::from(OBJECTS_PATH);
         path.push(dir);
 
         fs::create_dir_all(&path)
@@ -163,10 +176,12 @@ impl ObjectFile {
         Ok(digest)
     }
 
-    fn hash_to_path(hash: &str) -> String {
+    fn hash_to_path(hash: &str) -> PathBuf {
         let dir = &hash[..2];
         let file = &hash[2..];
-        let path = format!("{OBJECTS_PATH}/{dir}/{file}");
+        let mut path = PathBuf::from(OBJECTS_PATH);
+        path.push(dir);
+        path.push(file);
         path
     }
 }
