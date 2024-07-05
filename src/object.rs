@@ -12,11 +12,11 @@ use sha1::{Digest, Sha1};
 
 const OBJECTS_PATH: &str = ".git/objects";
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub enum ObjectType {
     Blob,
     Tree,
-    //Commit,
+    Commit,
 }
 
 impl Display for ObjectType {
@@ -24,14 +24,14 @@ impl Display for ObjectType {
         match self {
             ObjectType::Blob => write!(f, "blob"),
             ObjectType::Tree => write!(f, "tree"),
-            // ObjectType::Commit => write!(f, "commit"),
+            ObjectType::Commit => write!(f, "commit"),
         }
     }
 }
 
 #[derive(Clone)]
 pub struct Header {
-    pub typ: String,
+    pub typ: ObjectType,
     pub size: usize,
 }
 
@@ -94,8 +94,15 @@ impl ObjectFile {
             .parse::<usize>()
             .context("parsing object size in header")?;
 
+        let object_type = match typ {
+            "blob" => ObjectType::Blob,
+            "tree" => ObjectType::Tree,
+            "commit" => ObjectType::Commit,
+            _ => anyhow::bail!("unknown object type {}", typ),
+        };
+
         self.header = Some(Header {
-            typ: typ.to_owned(),
+            typ: object_type,
             size,
         });
 

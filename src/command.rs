@@ -29,16 +29,11 @@ pub fn cat_file(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<
     let mut f = ObjectFile::read(hash)?;
 
     let header = f.get_header()?;
-    let typ = header.typ;
+    let object_type = header.typ;
     let size = header.size;
 
-    anyhow::ensure!(
-        ["blob", "commit", "tree"].contains(&typ.as_str()),
-        "unknown object type '{typ}'"
-    );
-
     if type_only {
-        println!("{typ}");
+        println!("{object_type}");
         return Ok(());
     }
 
@@ -95,7 +90,7 @@ fn list_tree(
     let header = f.get_header()?;
     let typ = header.typ;
 
-    anyhow::ensure!(typ == "tree", "incorrect object type '{typ}'");
+    anyhow::ensure!(typ == ObjectType::Tree, "incorrect object type '{typ}'");
 
     let mut content = BufReader::new(f.get_content()?);
 
