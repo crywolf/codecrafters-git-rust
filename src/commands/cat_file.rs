@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-use crate::object::ObjectFile;
+use crate::object::{ObjectFile, ObjectType};
 
 /// git cat-file command
 pub fn invoke(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
@@ -17,6 +17,10 @@ pub fn invoke(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()
     if size_only {
         println!("{size}");
         return Ok(());
+    }
+
+    if object_type == ObjectType::Tree {
+        return super::ls_tree::invoke(hash, false, false);
     }
 
     let mut stdout = std::io::stdout().lock();
