@@ -18,6 +18,7 @@ enum Commands {
     Init,
 
     /// Provide content or type and size information for repository objects
+    #[command(allow_missing_positional = true)]
     CatFile {
         /// Show object type
         #[arg(short, conflicts_with = "size_only")]
@@ -31,8 +32,16 @@ enum Commands {
         #[arg(short, conflicts_with_all = ["size_only", "type_only"])]
         pretty_print: bool,
 
+        /// Object type. Typically this matches the real type of <object>.
+        #[arg(
+            id = "type",
+            conflicts_with_all = ["pretty_print","size_only", "type_only"],
+            required_unless_present_any = ["pretty_print", "size_only", "type_only"]
+        )]
+        object_type: Option<String>,
+
         /// Object hash
-        #[arg(id = "object")]
+        #[arg(id = "object", required = true)]
         hash: String,
     },
 
@@ -89,11 +98,12 @@ fn main() -> anyhow::Result<()> {
     match args.command {
         Commands::Init => commands::init::invoke(),
         Commands::CatFile {
-            pretty_print: _,
+            pretty_print,
+            object_type,
             type_only,
             size_only,
             hash,
-        } => commands::cat_file::invoke(&hash, type_only, size_only),
+        } => commands::cat_file::invoke(&hash, object_type, pretty_print, type_only, size_only),
         Commands::HashObject {
             write,
             file,

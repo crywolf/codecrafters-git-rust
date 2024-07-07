@@ -3,14 +3,26 @@ use anyhow::Context;
 use crate::object::{ObjectFile, ObjectType};
 
 /// git cat-file command
-pub fn invoke(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()> {
+pub fn invoke(
+    hash: &str,
+    object_type: Option<String>,
+    pretty_print: bool,
+    type_only: bool,
+    size_only: bool,
+) -> anyhow::Result<()> {
     let mut object = ObjectFile::read(hash)?;
 
-    let object_type = object.header.typ;
+    let real_object_type = object.header.typ;
     let size = object.header.size;
 
+    if let Some(object_type) = object_type {
+        if object_type != real_object_type.to_string() {
+            anyhow::bail!("File is not {}", object_type)
+        }
+    }
+
     if type_only {
-        println!("{object_type}");
+        println!("{real_object_type}");
         return Ok(());
     }
 
@@ -19,7 +31,7 @@ pub fn invoke(hash: &str, type_only: bool, size_only: bool) -> anyhow::Result<()
         return Ok(());
     }
 
-    if object_type == ObjectType::Tree {
+    if pretty_print && real_object_type == ObjectType::Tree {
         return super::ls_tree::invoke(hash, false, false);
     }
 
