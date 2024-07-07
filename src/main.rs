@@ -1,4 +1,4 @@
-mod command;
+mod commands;
 mod object;
 
 use std::path::PathBuf;
@@ -87,19 +87,19 @@ enum Commands {
 fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
     match args.command {
-        Commands::Init => command::init(),
+        Commands::Init => commands::init::invoke(),
         Commands::CatFile {
             pretty_print: _,
             type_only,
             size_only,
             hash,
-        } => command::cat_file(&hash, type_only, size_only),
+        } => commands::cat_file::invoke(&hash, type_only, size_only),
         Commands::HashObject {
             write,
             file,
             typ: _,
         } => {
-            let hash = command::hash_object(file, write)?;
+            let hash = commands::hash_object::invoke(file, write)?;
             println!("{}", hex::encode(hash));
             Ok(())
         }
@@ -107,14 +107,14 @@ fn main() -> anyhow::Result<()> {
             recurse,
             name_only,
             hash,
-        } => command::ls_tree(&hash, recurse, name_only),
-        Commands::WriteTree {} => command::write_tree(),
+        } => commands::ls_tree::invoke(&hash, recurse, name_only),
+        Commands::WriteTree {} => commands::write_tree::invoke(),
         Commands::CommitTree {
             parent_hash,
             message,
             tree_hash,
         } => {
-            let hash = command::commit_tree(&tree_hash, &message, parent_hash)?;
+            let hash = commands::commit_tree::invoke(&tree_hash, &message, parent_hash)?;
             println!("{}", hex::encode(hash));
             Ok(())
         }
