@@ -64,8 +64,24 @@ enum Commands {
         #[arg(id = "tree-ish")]
         hash: String,
     },
+
     /// Create a tree object
     WriteTree {},
+
+    /// Create a new commit object
+    CommitTree {
+        /// Parent commit object
+        #[arg(short, id = "parent")]
+        parent_hash: Option<String>,
+
+        /// Commit log message
+        #[arg(short, id = "message")]
+        message: String,
+
+        /// An existing tree object
+        #[arg(id = "tree")]
+        tree_hash: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -83,7 +99,7 @@ fn main() -> anyhow::Result<()> {
             file,
             typ: _,
         } => {
-            let hash = command::hash_object(&file, write)?;
+            let hash = command::hash_object(file, write)?;
             println!("{}", hex::encode(hash));
             Ok(())
         }
@@ -93,5 +109,14 @@ fn main() -> anyhow::Result<()> {
             hash,
         } => command::ls_tree(&hash, recurse, name_only),
         Commands::WriteTree {} => command::write_tree(),
+        Commands::CommitTree {
+            parent_hash,
+            message,
+            tree_hash,
+        } => {
+            let hash = command::commit_tree(&tree_hash, &message, parent_hash)?;
+            println!("{}", hex::encode(hash));
+            Ok(())
+        }
     }
 }

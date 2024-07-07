@@ -104,7 +104,7 @@ impl ObjectFile<()> {
         Ok(ObjectFile { header, reader: r })
     }
 
-    fn hash_to_path(hash: &str) -> PathBuf {
+    pub fn hash_to_path(hash: &str) -> PathBuf {
         let dir = &hash[..2];
         let file = &hash[2..];
         let mut path = PathBuf::from(OBJECTS_PATH);
