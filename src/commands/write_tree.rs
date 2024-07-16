@@ -89,13 +89,13 @@ fn write_tree_for(path: &Path) -> anyhow::Result<Option<[u8; 20]>> {
         size: tree.len(),
     };
 
-    let tree_object = ObjectFile {
+    let mut tree_object = ObjectFile {
         header,
         reader: std::io::Cursor::new(tree),
     };
 
     // compress and write to disk
-    let hash = tree_object.write()?;
+    let hash = tree_object.write(None)?;
 
     Ok(Some(hash))
 }

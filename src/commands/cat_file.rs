@@ -10,7 +10,7 @@ pub fn invoke(
     type_only: bool,
     size_only: bool,
 ) -> anyhow::Result<()> {
-    let mut object = ObjectFile::read(hash)?;
+    let mut object = ObjectFile::read(hash, None)?;
 
     let real_object_type = object.header.typ;
     let size = object.header.size;

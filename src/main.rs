@@ -91,6 +91,17 @@ enum Commands {
         #[arg(id = "tree")]
         tree_hash: String,
     },
+
+    /// Clone a repository into a new directory
+    Clone {
+        /// The repository URL to clone from
+        #[arg(id = "repository")]
+        repository: String,
+
+        /// The name of a new directory to clone into
+        #[arg(id = "directory")]
+        dir: Option<PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -128,5 +139,6 @@ fn main() -> anyhow::Result<()> {
             println!("{}", hex::encode(hash));
             Ok(())
         }
+        Commands::Clone { repository, dir } => commands::clone::invoke(&repository, dir),
     }
 }

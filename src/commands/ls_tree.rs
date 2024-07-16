@@ -15,7 +15,7 @@ fn list_tree(
     name_only: bool,
     path_prefix: Option<&str>,
 ) -> anyhow::Result<()> {
-    let mut object = ObjectFile::read(hash)?;
+    let mut object = ObjectFile::read(hash, None)?;
 
     let typ = object.header.typ;
     anyhow::ensure!(typ == ObjectType::Tree, "incorrect object type '{typ}'");

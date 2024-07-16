@@ -40,7 +40,7 @@ pub fn invoke(
 
     writeln!(commit, "\n{message}")?;
 
-    let object = ObjectFile {
+    let mut object = ObjectFile {
         header: Header {
             typ: ObjectType::Commit,
             size: commit.len(),
@@ -48,5 +48,5 @@ pub fn invoke(
         reader: std::io::Cursor::new(commit),
     };
 
-    object.write()
+    object.write(None)
 }

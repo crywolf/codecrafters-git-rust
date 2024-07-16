@@ -18,6 +18,9 @@ pub enum ObjectType {
     Blob,
     Tree,
     Commit,
+    Tag,
+    OfsDelta,
+    RefDelta,
 }
 
 impl Display for ObjectType {
@@ -26,11 +29,14 @@ impl Display for ObjectType {
             ObjectType::Blob => write!(f, "blob"),
             ObjectType::Tree => write!(f, "tree"),
             ObjectType::Commit => write!(f, "commit"),
+            ObjectType::Tag => write!(f, "tag"),
+            ObjectType::OfsDelta => write!(f, "osf_delta"),
+            ObjectType::RefDelta => write!(f, "ref_delta"),
         }
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Header {
     pub typ: ObjectType,
     pub size: usize,
@@ -42,8 +48,14 @@ pub struct ObjectFile<R> {
 }
 
 impl ObjectFile<()> {
-    pub fn read(hash: &str) -> anyhow::Result<ObjectFile<impl BufRead>> {
-        let path = Self::hash_to_path(hash);
+    pub fn read(hash: &str, custom_dir: Option<&Path>) -> anyhow::Result<ObjectFile<impl BufRead>> {
+        let mut path = Self::hash_to_path(hash);
+        if let Some(custom_dir) = custom_dir {
+            let mut custom_path = PathBuf::from(custom_dir);
+            custom_path.push(path);
+            path = custom_path;
+        }
+
         let f =
             fs::File::open(&path).with_context(|| format!("opening file {}", path.display()))?;
 
@@ -134,7 +146,7 @@ impl<R: Read> ObjectFile<R> {
     }
 
     /// Compresses and write object's data to disk. Returns object hash ID.
-    pub fn write(mut self) -> anyhow::Result<[u8; 20]> {
+    pub fn write(&mut self, custom_dir: Option<&Path>) -> anyhow::Result<[u8; 20]> {
         let dir = tempfile::tempdir().context("creating temp dir")?;
 
         let tmp_file_path = dir.path().join("tmpfile");
@@ -147,7 +159,7 @@ impl<R: Read> ObjectFile<R> {
             hasher: Sha1::new(),
         };
 
-        let header = self.header;
+        let header = &self.header;
         write!(compressor, "{} {}\0", header.typ, header.size)?;
 
         std::io::copy(&mut self.reader, &mut compressor)
@@ -163,6 +175,12 @@ impl<R: Read> ObjectFile<R> {
 
         let mut path = PathBuf::from(OBJECTS_PATH);
         path.push(dir);
+
+        if let Some(custom_dir) = custom_dir {
+            let mut custom_path = PathBuf::from(custom_dir);
+            custom_path.push(path);
+            path = custom_path;
+        }
 
         fs::create_dir_all(&path)
             .with_context(|| format!("creating directory {}", path.display()))?;
